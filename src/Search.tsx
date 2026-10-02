@@ -21,8 +21,9 @@ export default function Search({ cycles, expenses }: { cycles: Cycle[]; expenses
     if (tag && !(expense.tags ?? []).includes(tag)) return false
     if (from && expense.date < from) return false
     if (to && expense.date > to) return false
-    if (minimum && expense.amount < Number(minimum)) return false
-    if (maximum && expense.amount > Number(maximum)) return false
+    const amount = expense.amount + (expense.fee ?? 0)
+    if (minimum && amount < Number(minimum)) return false
+    if (maximum && amount > Number(maximum)) return false
     return true
   }).sort((a, b) => b.date.localeCompare(a.date) || b.createdAt - a.createdAt), [expenses, query, category, tag, from, to, minimum, maximum, cycles])
 

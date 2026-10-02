@@ -32,7 +32,9 @@ async function saveReminder(value) {
 }
 
 self.addEventListener('message', (event) => {
-  if (event.data?.type === 'SET_DAILY_REMINDER') event.waitUntil(saveReminder(event.data.reminder))
+  if (event.data?.type === 'SET_DAILY_REMINDER') {
+    event.waitUntil(readReminder().then((previous) => saveReminder({ ...(previous ?? {}), ...event.data.reminder })))
+  }
 })
 
 self.addEventListener('periodicsync', (event) => {

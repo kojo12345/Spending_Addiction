@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import { DEFAULT_PREFS } from './categories'
 import { mergeState, migrateState } from './merge'
-import type { AppState } from './types'
+import { cycleIncome } from './types'
+import type { AppState, Cycle } from './types'
 
 const base = (): AppState => ({ cycles: [], expenses: [], prefs: DEFAULT_PREFS, updatedAt: 10, prefsUpdatedAt: 10 })
 
@@ -40,5 +41,15 @@ describe('migrateState', () => {
     expect(migrated.cycles[0].updatedAt).toBe(5)
     expect(migrated.expenses[0].updatedAt).toBe(4)
     expect(migrated.cycles[0].incomeSources).toEqual([{ label: 'Income', amount: 100 }])
+  })
+
+  it('uses all income sources for cycle income while retaining legacy cycles', () => {
+    const multiIncome: Cycle = {
+      id: 'multi', startDate: '2026-01-01', nextPayday: '2026-02-01', income: 900,
+      incomeSources: [{ label: 'Salary', amount: 700 }, { label: 'Side work', amount: 200 }],
+      fixedBills: 0, savings: 0,
+    }
+    expect(cycleIncome(multiIncome)).toBe(900)
+    expect(cycleIncome({ ...multiIncome, incomeSources: undefined })).toBe(900)
   })
 })

@@ -20,7 +20,6 @@ import { cacheReceipt, compressReceipt, readCachedReceipt } from './receiptCache
 import { supabase } from './supabase'
 import Search from './Search'
 import Insights from './Insights'
-import * as XLSX from 'xlsx'
 
 const money = (n: number) =>
   `${n < 0 ? '-' : ''}GH₵${Math.abs(n).toLocaleString('en-GH', {
@@ -53,7 +52,7 @@ function Setup({ previous, expenses, onStart }: { previous: Cycle | null; expens
   const inc = incomeSources.reduce((sum, source) => sum + (Number(source.amount) || 0), 0)
   const spendable = inc + adjustment - (Number(bills) || 0) - (Number(savings) || 0)
   const days = daysBetween(startDate, payday)
-  const valid = inc > 0 && spendable > 0 && days > 0 && startDate <= today && payday > startDate
+  const valid = inc > 0 && incomeSources.every((source) => !(Number(source.amount) > 0) || Boolean(source.label.trim())) && spendable > 0 && days > 0 && startDate <= today && payday > startDate
 
   const submit = (e: FormEvent) => {
     e.preventDefault()
@@ -63,7 +62,10 @@ function Setup({ previous, expenses, onStart }: { previous: Cycle | null; expens
       startDate,
       nextPayday: payday,
       income: inc + adjustment,
-      incomeSources: adjustment ? [...incomeSources, { label: 'Carryover', amount: adjustment }] : incomeSources,
+      incomeSources: [
+        ...incomeSources.filter((source) => Number(source.amount) > 0),
+        ...(adjustment ? [{ label: 'Carryover', amount: adjustment }] : []),
+      ],
       fixedBills: Number(bills) || 0,
       savings: Number(savings) || 0,
       ...(adjustment > 0 ? { carriedOver: adjustment } : {}),
@@ -143,6 +145,7 @@ function Home({
   onEdit,
   onDelete,
   onReceipt,
+  onLoadReceipt,
   onPayday,
   onRecurringUpdate,
   onNewCycle,
@@ -150,6 +153,7 @@ function Home({
   onDeleteCategory,
   recap,
   onDismissRecap,
+  reminderSetupError,
   prefs,
   onPrefs,
 }: {
@@ -159,6 +163,7 @@ function Home({
   onEdit: (e: Expense) => void
   onDelete: (id: string) => void
   onReceipt: (expenseId: string, blob: Blob, dataUrl: string) => Promise<string | undefined>
+  onLoadReceipt: (expense: Expense) => Promise<string | undefined>
   onPayday: (date: string) => void
   onRecurringUpdate: (items: RecurringItem[]) => void
   onNewCycle: () => void
@@ -166,6 +171,7 @@ function Home({
   onDeleteCategory: (category: string) => void
   recap: { spent: number; allowance: number; rolled: number } | null
   onDismissRecap: () => void
+  reminderSetupError: string
   prefs: Prefs
   onPrefs: (p: Prefs) => void
 }) {
@@ -287,7 +293,10 @@ function Home({
     setEditReceipt(null)
     setReceiptPreview('')
     setReceiptError('')
-    void readCachedReceipt(expense.id).then((dataUrl) => setReceiptPreview(dataUrl ?? '')).catch((error: unknown) => setReceiptError(error instanceof Error ? error.message : 'Unable to load the local receipt.'))
+    void readCachedReceipt(expense.id).then(async (dataUrl) => {
+      if (dataUrl) setReceiptPreview(dataUrl)
+      else if (expense.receiptPath) setReceiptPreview(await onLoadReceipt(expense) ?? '')
+    }).catch((error: unknown) => setReceiptError(error instanceof Error ? error.message : 'Unable to load the receipt.'))
     setEditDate(expense.date)
     setEditExcluded(expense.excluded ?? false)
     setEditFee(expense.fee ? String(expense.fee) : '')
@@ -501,8 +510,8 @@ function Home({
         <summary>Morning reminder <span className="muted small">{prefs.morningReminder?.enabled ? 'On' : 'Off'}</span></summary>
         <label className="toggle"><input type="checkbox" checked={prefs.morningReminder?.enabled ?? false} onChange={(e) => void setMorningReminder(e.target.checked)} /><span>Notify me each morning</span></label>
         <label className="field"><span>Reminder time</span><input type="time" value={prefs.morningReminder?.time ?? '08:00'} onChange={(e) => onPrefs({ ...prefs, morningReminder: { enabled: prefs.morningReminder?.enabled ?? false, time: e.target.value } })} /></label>
-        <p className="muted small">Notifications only work while the PWA is installed and permission is granted. iPhone support is limited.</p>
-        {reminderMessage && <p className="small" role="status">{reminderMessage}</p>}
+        <p className="muted small">Notifications only work while the PWA is installed and permission is granted. iPhone support is limited; scheduled delivery depends on browser support.</p>
+        {(reminderMessage || reminderSetupError) && <p className={`small${reminderSetupError ? ' bad' : ''}`} role="status">{reminderSetupError || reminderMessage}</p>}
       </details>
 
       <details className="card recurring-panel">
@@ -678,6 +687,7 @@ export default function App() {
   const [pinEntry, setPinEntry] = useState('')
   const [pinError, setPinError] = useState('')
   const [recap, setRecap] = useState<{ spent: number; allowance: number; rolled: number } | null>(null)
+  const [reminderSetupError, setReminderSetupError] = useState('')
   const { session, status } = useSync(state, setState)
 
   const mutate = (fn: (s: AppState) => Partial<AppState>) => setState((s) => {
@@ -702,7 +712,8 @@ export default function App() {
   const current = state.cycles.find((c) => !c.endedOn && !c.deleted) ?? null
   const opened = state.cycles.find((c) => c.id === openId && !c.deleted)
 
-  const exportXlsx = () => {
+  const exportXlsx = async () => {
+    const XLSX = await import('xlsx')
     const workbook = XLSX.utils.book_new()
     const expenseRows = state.expenses.filter((expense) => !expense.deleted).map((expense) => ({
       Date: expense.date,
@@ -744,6 +755,69 @@ export default function App() {
     }
     localStorage.setItem('paycycle.last-opened-date', today)
   }, [current?.id])
+
+  useEffect(() => {
+    const schedule = state.prefs.morningReminder
+    if (!('serviceWorker' in navigator)) return
+    let timer: number | undefined
+    let cancelled = false
+    if (!current || !schedule?.enabled || !('Notification' in window) || Notification.permission !== 'granted') {
+      void navigator.serviceWorker.getRegistration('/reminder/').then(async (registration) => {
+        if (!registration) return
+        registration.active?.postMessage({ type: 'SET_DAILY_REMINDER', reminder: { enabled: false } })
+        const periodic = registration as ServiceWorkerRegistration & { periodicSync?: { unregister?: (tag: string) => Promise<void> } }
+        await periodic.periodicSync?.unregister?.('paycycle-daily-reminder')
+      }).catch((error: unknown) => setReminderSetupError(error instanceof Error ? error.message : 'Unable to disable the reminder.'))
+      return
+    }
+    const allowance = summarise(current, state.expenses, toISO(new Date()), {
+      dayWeights: state.prefs.dayWeights,
+      plannedExpenses: state.prefs.plannedExpenses,
+    }).allowance * (1 - Math.min(0.5, Math.max(0, state.prefs.comfortBuffer ?? 0.1)))
+    void (async () => {
+      try {
+        const registration = await navigator.serviceWorker.register('/reminder/sw.js', { scope: '/reminder/' })
+        const reminder = { enabled: true, time: schedule.time, allowance: money(Math.max(0, allowance)) }
+        ;(registration.active ?? registration.installing)?.postMessage({ type: 'SET_DAILY_REMINDER', reminder })
+        const periodic = registration as ServiceWorkerRegistration & {
+          periodicSync?: {
+            register: (tag: string, options: { minInterval: number }) => Promise<void>
+            unregister?: (tag: string) => Promise<void>
+          }
+        }
+        if (periodic.periodicSync) {
+          await periodic.periodicSync.register('paycycle-daily-reminder', { minInterval: 24 * 60 * 60 * 1000 })
+        } else {
+          const [hour, minute] = schedule.time.split(':').map(Number)
+          const next = new Date()
+          next.setHours(hour, minute, 0, 0)
+          if (next <= new Date()) next.setDate(next.getDate() + 1)
+          timer = window.setTimeout(() => {
+            if (!cancelled) void registration.showNotification('Paycycle', { body: `Today's comfortable amount: ${reminder.allowance}`, icon: '/icon-192.png' })
+          }, next.getTime() - Date.now())
+        }
+        setReminderSetupError('')
+      } catch (error) {
+        setReminderSetupError(error instanceof Error ? error.message : 'Unable to schedule the reminder.')
+      }
+    })()
+    return () => {
+      cancelled = true
+      if (timer !== undefined) window.clearTimeout(timer)
+    }
+  }, [current?.id, state.prefs.morningReminder, state.prefs.dayWeights, state.prefs.plannedExpenses, state.prefs.comfortBuffer, state.expenses])
+
+  useEffect(() => {
+    if (new URLSearchParams(window.location.search).get('add-expense') !== '1') return
+    setTab('today')
+    const timeout = window.setTimeout(() => {
+      const field = document.querySelector<HTMLInputElement>('input.amount')
+      field?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      field?.focus()
+      window.history.replaceState(null, '', window.location.pathname + window.location.hash)
+    }, 250)
+    return () => window.clearTimeout(timeout)
+  }, [])
 
   useEffect(() => {
     let hiddenAt: number | null = null
@@ -824,6 +898,22 @@ export default function App() {
           if (error) throw new Error(`Receipt upload failed: ${error.message}`)
           return path
         }}
+        onLoadReceipt={async (expense) => {
+          if (!supabase || !session || !expense.receiptPath) return undefined
+          const { data, error } = await supabase.storage.from('receipts').createSignedUrl(expense.receiptPath, 60)
+          if (error) throw new Error(`Receipt download failed: ${error.message}`)
+          const response = await fetch(data.signedUrl)
+          if (!response.ok) throw new Error(`Receipt download failed with HTTP ${response.status}.`)
+          const blob = await response.blob()
+          const dataUrl = await new Promise<string>((resolve, reject) => {
+            const reader = new FileReader()
+            reader.onload = () => typeof reader.result === 'string' ? resolve(reader.result) : reject(new Error('Unable to read the downloaded receipt.'))
+            reader.onerror = () => reject(new Error('Unable to read the downloaded receipt.'))
+            reader.readAsDataURL(blob)
+          })
+          await cacheReceipt(expense.id, dataUrl)
+          return dataUrl
+        }}
         onPayday={(date) => mutate((s) => ({ cycles: s.cycles.map((c) => c.id === current.id ? { ...c, nextPayday: date } : c) }))}
         onRecurringUpdate={(items) => mutate((s) => ({ prefs: { ...s.prefs, recurringItems: items } }))}
         onNewCycle={closeCycle}
@@ -854,6 +944,7 @@ export default function App() {
         })}
         recap={recap}
         onDismissRecap={() => setRecap(null)}
+        reminderSetupError={reminderSetupError}
         prefs={state.prefs}
         onPrefs={(p) => mutate(() => ({ prefs: p }))}
       />
