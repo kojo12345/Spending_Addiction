@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import type { Session } from '@supabase/supabase-js'
-import { supabase } from './supabase'
+import { supabase, supabaseConfigMessage } from './supabase'
 import { toISO } from './logic'
 import type { SyncStatus } from './sync'
 import type { AppState } from './types'
@@ -26,6 +26,8 @@ export default function Account({ session, status, state, onImport, hasPin, onPi
   const [resetPassword, setResetPassword] = useState(() => window.location.hash.includes('type=recovery'))
   const [newPassword, setNewPassword] = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
+  const [authBusy, setAuthBusy] = useState(false)
+  const [signOutBusy, setSignOutBusy] = useState(false)
 
   useEffect(() => {
     if (!supabase) return
@@ -36,18 +38,81 @@ export default function Account({ session, status, state, onImport, hasPin, onPi
   }, [])
 
   const auth = async (mode: 'in' | 'up') => {
-    if (!supabase) return
-    const creds = { email, password }
-    const { error } = mode === 'in' ? await supabase.auth.signInWithPassword(creds) : await supabase.auth.signUp(creds)
-    setMsgKind(error ? 'error' : 'success')
-    setMsg(error ? error.message : mode === 'up' ? 'Account created. If email confirmation is on, confirm it, then sign in.' : '')
+    if (!supabase) {
+      setMsgKind('error')
+      setMsg(supabaseConfigMessage ?? 'Cloud sign-in is unavailable.')
+      return
+    }
+    const normalizedEmail = email.trim()
+    if (!normalizedEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
+      setMsgKind('error')
+      setMsg('Enter a valid email address.')
+      return
+    }
+    if (!password || (mode === 'up' && password.length < 6)) {
+      setMsgKind('error')
+      setMsg(mode === 'up' ? 'Choose a password with at least 6 characters.' : 'Enter your password.')
+      return
+    }
+    setAuthBusy(true)
+    setMsg('')
+    try {
+      if (mode === 'in') {
+        const { error } = await supabase.auth.signInWithPassword({ email: normalizedEmail, password })
+        if (error) throw error
+        setMsgKind('success')
+        setMsg('Signed in. Your cloud data is syncing.')
+      } else {
+        const { data, error } = await supabase.auth.signUp({
+          email: normalizedEmail,
+          password,
+          options: { emailRedirectTo: `${window.location.origin}/?auth=confirmed` },
+        })
+        if (error) throw error
+        setMsgKind('success')
+        setMsg(data.session
+          ? 'Account created and signed in.'
+          : 'Account created. Check your email for a confirmation link, then return here to sign in.')
+      }
+    } catch (error) {
+      setMsgKind('error')
+      setMsg(error instanceof Error ? error.message : 'Unable to complete authentication. Check your connection and try again.')
+    } finally {
+      setAuthBusy(false)
+    }
   }
 
   const sendResetLink = async () => {
-    if (!supabase || !email) return
-    const { error } = await supabase.auth.resetPasswordForEmail(email, { redirectTo: window.location.origin })
-    setMsgKind(error ? 'error' : 'success')
-    setMsg(error ? error.message : 'Password reset link sent. Check your email.')
+    if (!supabase || !email.trim()) return
+    setAuthBusy(true)
+    try {
+      const { error } = await supabase.auth.resetPasswordForEmail(email.trim(), { redirectTo: `${window.location.origin}/?auth=recovery` })
+      if (error) throw error
+      setMsgKind('success')
+      setMsg('If an account exists for that email, a password reset link has been sent.')
+    } catch (error) {
+      setMsgKind('error')
+      setMsg(error instanceof Error ? error.message : 'Unable to request a password reset. Check your connection and try again.')
+    } finally {
+      setAuthBusy(false)
+    }
+  }
+
+  const signOut = async () => {
+    if (!supabase) return
+    setSignOutBusy(true)
+    setMsg('')
+    try {
+      const { error } = await supabase.auth.signOut({ scope: 'local' })
+      if (error) throw error
+      setMsgKind('success')
+      setMsg('You have been signed out.')
+    } catch (error) {
+      setMsgKind('error')
+      setMsg(error instanceof Error ? error.message : 'Unable to sign out. Check your connection and try again.')
+    } finally {
+      setSignOutBusy(false)
+    }
   }
 
   const saveNewPassword = async () => {
@@ -84,7 +149,7 @@ export default function Account({ session, status, state, onImport, hasPin, onPi
       if (window.confirm('Replace the data on this device with this backup?')) onImport(d as AppState)
     } catch {
       setMsgKind('error')
-      setMsg('That file is not a Paycycle backup.')
+      setMsg('That file is not an Xpenden Addiction backup.')
     }
   }
 
@@ -123,9 +188,10 @@ export default function Account({ session, status, state, onImport, hasPin, onPi
 
   return (
     <main className="screen">
-      <h1 className="title">Account</h1>
+      <h1 className="title">{session ? 'Profile' : 'Account'}</h1>
       <section className="card stack">
         <p className="muted">{LABEL[status]}</p>
+        {!supabase && <p className="bad small" role="alert">{supabaseConfigMessage}</p>}
         {supabase && resetPassword && (
           <>
             <h2 className="h2">Set a new password</h2>
@@ -135,21 +201,35 @@ export default function Account({ session, status, state, onImport, hasPin, onPi
           </>
         )}
         {supabase && !resetPassword && !session && (
-          <>
-            <input type="email" placeholder="Email" value={email} onChange={(e) => setEmail(e.target.value)} autoComplete="email" />
-            <input type="password" placeholder="Password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="current-password" />
-            <button className="primary" onClick={() => auth('in')} disabled={!email || !password}>Sign in</button>
-            <button className="link" onClick={() => auth('up')} disabled={!email || password.length < 6}>Create account</button>
-            <button className="link" onClick={() => void sendResetLink()} disabled={!email}>Forgot password</button>
-          </>
+          <form className="stack" onSubmit={(e) => {
+            e.preventDefault()
+            void auth('in')
+          }}>
+            <label className="field"><span>Email</span><input type="email" placeholder="you@example.com" value={email} onChange={(e) => setEmail(e.target.value)} autoComplete="email" required /></label>
+            <label className="field"><span>Password</span><input type="password" placeholder="Password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="current-password" required /></label>
+            <button className="primary" type="submit" disabled={authBusy}>{authBusy ? 'Please wait…' : 'Sign in'}</button>
+            <button className="link" type="button" onClick={() => void auth('up')} disabled={authBusy}>Create account</button>
+            <button className="link" type="button" onClick={() => void sendResetLink()} disabled={authBusy}>Forgot password</button>
+            <p className="muted small">After signup, confirm your email if prompted. The confirmation link returns to this app. Add this site’s URL to Supabase Auth → URL Configuration → Redirect URLs.</p>
+          </form>
         )}
         {supabase && !resetPassword && session && (
-          <>
-            <p><strong>{session.user.email}</strong></p>
-            <button className="link" onClick={() => supabase!.auth.signOut()}>Sign out</button>
-          </>
+          <div className="profile-card">
+            <div className="profile-avatar" aria-hidden="true">
+              {(session.user.email ?? 'U').trim().charAt(0).toUpperCase()}
+            </div>
+            <div className="profile-details">
+              <h2 className="h2">Your profile</h2>
+              <span className="muted small">Email</span>
+              <strong className="profile-email">{session.user.email ?? 'Email unavailable'}</strong>
+              <span className="profile-status"><span className="profile-status-dot" /> Signed in</span>
+            </div>
+            <button className="sign-out" type="button" onClick={() => void signOut()} disabled={signOutBusy}>
+              {signOutBusy ? 'Signing out…' : 'Sign out'}
+            </button>
+          </div>
         )}
-        {msg && <p className={`${msgKind === 'error' ? 'bad' : 'good'} small`} role="status">{msg}</p>}
+        {msg && <p className={`${msgKind === 'error' ? 'bad' : 'good'} small`} role={msgKind === 'error' ? 'alert' : 'status'}>{msg}</p>}
       </section>
       <section className="card stack">
         <h2 className="h2">Daily guidance</h2>

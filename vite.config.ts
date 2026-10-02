@@ -9,15 +9,15 @@ export default defineConfig({
       registerType: 'autoUpdate',
       includeAssets: ['icon-192.png', 'icon-512.png'],
       manifest: {
-        name: 'Paycycle',
-        short_name: 'Paycycle',
+        name: 'Xpenden Addiction',
+        short_name: 'Xpenden',
         description: 'Daily spending allowance, payday to payday',
         theme_color: '#2F4BD0',
         background_color: '#F4F6FA',
         display: 'standalone',
         start_url: '/',
         shortcuts: [
-          { name: 'Add expense', short_name: 'Add expense', description: 'Open Paycycle to log an expense', url: '/?add-expense=1', icons: [{ src: '/icon-192.png', sizes: '192x192' }] },
+          { name: 'Add expense', short_name: 'Add expense', description: 'Open Xpenden Addiction to log an expense', url: '/?add-expense=1', icons: [{ src: '/icon-192.png', sizes: '192x192' }] },
         ],
         icons: [
           { src: '/icon-192.png', sizes: '192x192', type: 'image/png' },

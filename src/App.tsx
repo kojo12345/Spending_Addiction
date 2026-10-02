@@ -678,9 +678,14 @@ function initialState(): AppState {
 
 type Tab = 'today' | 'search' | 'history' | 'insights' | 'account'
 
+const isAuthCallback = () =>
+  new URLSearchParams(window.location.search).has('auth')
+  || window.location.hash.includes('access_token=')
+  || window.location.hash.includes('type=recovery')
+
 export default function App() {
   const [state, setState] = usePersistentState<AppState>('paycycle.state', initialState(), migrateState)
-  const [tab, setTab] = useState<Tab>('today')
+  const [tab, setTab] = useState<Tab>(() => isAuthCallback() ? 'account' : 'today')
   const [openId, setOpenId] = useState<string | null>(null)
   const [hasPin, setHasPin] = useState(pinIsConfigured)
   const [locked, setLocked] = useState(pinIsConfigured)
@@ -740,6 +745,10 @@ export default function App() {
   }
 
   useEffect(() => {
+    if (isAuthCallback()) setTab('account')
+  }, [])
+
+  useEffect(() => {
     if (!current) return
     const today = toISO(new Date())
     const yesterdayDate = new Date(`${today}T00:00:00`)
@@ -793,7 +802,7 @@ export default function App() {
           next.setHours(hour, minute, 0, 0)
           if (next <= new Date()) next.setDate(next.getDate() + 1)
           timer = window.setTimeout(() => {
-            if (!cancelled) void registration.showNotification('Paycycle', { body: `Today's comfortable amount: ${reminder.allowance}`, icon: '/icon-192.png' })
+            if (!cancelled) void registration.showNotification('Xpenden Addiction', { body: `Today's comfortable amount: ${reminder.allowance}`, icon: '/icon-192.png' })
           }, next.getTime() - Date.now())
         }
         setReminderSetupError('')
@@ -953,7 +962,7 @@ export default function App() {
 
   if (locked && hasPin) {
     return <main className="screen lock-screen">
-      <h1 className="title">Paycycle is locked</h1>
+      <h1 className="title">Xpenden Addiction is locked</h1>
       <form className="card stack" onSubmit={(e) => { e.preventDefault(); void verifyPin(pinEntry).then((valid) => {
         if (valid) { setLocked(false); setPinEntry(''); setPinError('') }
         else setPinError('That PIN is not correct.')

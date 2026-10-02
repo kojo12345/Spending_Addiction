@@ -47,7 +47,7 @@ self.addEventListener('periodicsync', (event) => {
     const minutes = now.getHours() * 60 + now.getMinutes()
     const [hour, minute] = reminder.time.split(':').map(Number)
     if (minutes < hour * 60 + minute || reminder.lastDate === date) return
-    await self.registration.showNotification('Paycycle', {
+    await self.registration.showNotification('Xpenden Addiction', {
       body: `Today's comfortable amount: ${reminder.allowance}`,
       icon: '/icon-192.png',
       badge: '/icon-192.png',

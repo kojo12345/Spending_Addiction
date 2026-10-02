@@ -115,6 +115,15 @@ button.cyc { display: flex; justify-content: space-between; align-items: center;
 .goal-assign { display: flex; gap: 8px; margin-top: 8px; }
 .goal-assign input { min-width: 0; padding: 10px 12px; }
 .income-source-list { display: flex; flex-direction: column; gap: 10px; }
+.profile-card { display: grid; grid-template-columns: 54px 1fr; align-items: center; gap: 14px; padding: 4px 0; }
+.profile-avatar { display: grid; place-items: center; width: 54px; height: 54px; border-radius: 50%; background: var(--primary); color: var(--primary-ink); font-size: 22px; font-weight: 800; }
+.profile-details { min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.profile-details .h2 { margin: 0 0 2px; }
+.profile-email { overflow-wrap: anywhere; }
+.profile-status { display: flex; align-items: center; gap: 6px; color: var(--good); font-size: 12px; font-weight: 700; margin-top: 4px; }
+.profile-status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--good); }
+.sign-out { grid-column: 1 / -1; font: inherit; font-weight: 700; padding: 13px; border: 1px solid var(--line); border-radius: var(--r-input); background: var(--bg); color: var(--ink); cursor: pointer; }
+.sign-out:disabled { opacity: .5; cursor: wait; }
 .income-source { display: grid; grid-template-columns: 1fr 1fr auto; gap: 8px; align-items: center; }
 .income-source input { min-width: 0; }
 .filter-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
