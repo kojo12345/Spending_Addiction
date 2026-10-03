@@ -1,9 +1,9 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import { cycleIncome } from './types'
 import type { AppState, Cycle, Expense, IncomeSource } from './types'
 import { completedDayStreak, daysBetween, summarise, toISO } from './logic'
-import { usePersistentState } from './store'
+import { GUEST_STATE_KEY, readAppState } from './store'
 import { DEFAULT_PREFS, recentCounts } from './categories'
 import type { Prefs } from './categories'
 import type { PlannedExpense, SavingsGoal } from './categories'
@@ -146,6 +146,7 @@ function Home({
   onDelete,
   onReceipt,
   onLoadReceipt,
+  cacheOwnerId,
   onPayday,
   onRecurringUpdate,
   onNewCycle,
@@ -164,6 +165,7 @@ function Home({
   onDelete: (id: string) => void
   onReceipt: (expenseId: string, blob: Blob, dataUrl: string) => Promise<string | undefined>
   onLoadReceipt: (expense: Expense) => Promise<string | undefined>
+  cacheOwnerId: string
   onPayday: (date: string) => void
   onRecurringUpdate: (items: RecurringItem[]) => void
   onNewCycle: () => void
@@ -293,7 +295,8 @@ function Home({
     setEditReceipt(null)
     setReceiptPreview('')
     setReceiptError('')
-    void readCachedReceipt(expense.id).then(async (dataUrl) => {
+    const cacheKey = `${cacheOwnerId}:${expense.id}`
+    void readCachedReceipt(cacheKey).then(async (dataUrl) => {
       if (dataUrl) setReceiptPreview(dataUrl)
       else if (expense.receiptPath) setReceiptPreview(await onLoadReceipt(expense) ?? '')
     }).catch((error: unknown) => setReceiptError(error instanceof Error ? error.message : 'Unable to load the receipt.'))
@@ -684,7 +687,13 @@ const isAuthCallback = () =>
   || window.location.hash.includes('type=recovery')
 
 export default function App() {
-  const [state, setState] = usePersistentState<AppState>('paycycle.state', initialState(), migrateState)
+  const [state, setState] = useState<AppState>(() => {
+    const fallback = migrateState(initialState())
+    return readAppState(GUEST_STATE_KEY)
+      ?? readAppState('paycycle.state')
+      ?? fallback
+  })
+  const guestFallback = useRef(state)
   const [tab, setTab] = useState<Tab>(() => isAuthCallback() ? 'account' : 'today')
   const [openId, setOpenId] = useState<string | null>(null)
   const [hasPin, setHasPin] = useState(pinIsConfigured)
@@ -693,7 +702,8 @@ export default function App() {
   const [pinError, setPinError] = useState('')
   const [recap, setRecap] = useState<{ spent: number; allowance: number; rolled: number } | null>(null)
   const [reminderSetupError, setReminderSetupError] = useState('')
-  const { session, status } = useSync(state, setState)
+  const { session, status, authReady, loadedOwnerId, syncMessage } = useSync(state, setState, guestFallback.current)
+  const accountDataReady = authReady && loadedOwnerId === (session?.user.id ?? null)
 
   const mutate = (fn: (s: AppState) => Partial<AppState>) => setState((s) => {
     const changes = fn(s)
@@ -749,12 +759,20 @@ export default function App() {
   }, [])
 
   useEffect(() => {
-    if (!current) return
+    setOpenId(null)
+    setRecap(null)
+    setReminderSetupError('')
+  }, [session?.user.id])
+
+  useEffect(() => {
+    if (!accountDataReady || !current) return
     const today = toISO(new Date())
     const yesterdayDate = new Date(`${today}T00:00:00`)
     yesterdayDate.setDate(yesterdayDate.getDate() - 1)
     const yesterday = toISO(yesterdayDate)
-    const lastOpened = localStorage.getItem('paycycle.last-opened-date')
+    const accountKey = session?.user.id ?? 'guest'
+    const lastOpenedKey = `paycycle.last-opened-date.${accountKey}`
+    const lastOpened = localStorage.getItem(lastOpenedKey)
     if (lastOpened === yesterday && yesterday >= current.startDate) {
       const previousSummary = summarise(current, state.expenses.filter((expense) => expense.date <= yesterday), yesterday, {
         dayWeights: state.prefs.dayWeights,
@@ -762,10 +780,11 @@ export default function App() {
       })
       setRecap({ spent: previousSummary.spentToday, allowance: previousSummary.allowance, rolled: previousSummary.remainingToday })
     }
-    localStorage.setItem('paycycle.last-opened-date', today)
-  }, [current?.id])
+    localStorage.setItem(lastOpenedKey, today)
+  }, [current?.id, accountDataReady, session?.user.id])
 
   useEffect(() => {
+    if (!accountDataReady) return
     const schedule = state.prefs.morningReminder
     if (!('serviceWorker' in navigator)) return
     let timer: number | undefined
@@ -814,9 +833,10 @@ export default function App() {
       cancelled = true
       if (timer !== undefined) window.clearTimeout(timer)
     }
-  }, [current?.id, state.prefs.morningReminder, state.prefs.dayWeights, state.prefs.plannedExpenses, state.prefs.comfortBuffer, state.expenses])
+  }, [current?.id, accountDataReady, state.prefs.morningReminder, state.prefs.dayWeights, state.prefs.plannedExpenses, state.prefs.comfortBuffer, state.expenses])
 
   useEffect(() => {
+    if (!accountDataReady) return
     if (new URLSearchParams(window.location.search).get('add-expense') !== '1') return
     setTab('today')
     const timeout = window.setTimeout(() => {
@@ -826,7 +846,7 @@ export default function App() {
       window.history.replaceState(null, '', window.location.pathname + window.location.hash)
     }, 250)
     return () => window.clearTimeout(timeout)
-  }, [])
+  }, [accountDataReady])
 
   useEffect(() => {
     let hiddenAt: number | null = null
@@ -844,7 +864,7 @@ export default function App() {
   }, [hasPin])
 
   useEffect(() => {
-    if (!current) return
+    if (!accountDataReady || !current) return
     const items = state.prefs.recurringItems ?? []
     if (!advanceRecurring(items, toISO(new Date())).occurrences.length) return
     setState((previous) => {
@@ -867,7 +887,7 @@ export default function App() {
         updatedAt: now,
       }
     })
-  }, [current?.id, state.prefs.recurringItems, state.expenses])
+  }, [current?.id, accountDataReady, state.prefs.recurringItems, state.expenses])
 
   const closeCycle = () => {
     if (!current) return
@@ -878,7 +898,7 @@ export default function App() {
 
   let view
   if (tab === 'account') {
-    view = <Account session={session} status={status} state={state} onImport={(s) => setState(migrateState({ ...s, updatedAt: Date.now() }))} hasPin={hasPin} onPinChange={(enabled) => { setHasPin(enabled); setLocked(false) }} onPrefs={(prefs) => mutate(() => ({ prefs }))} onExportXlsx={exportXlsx} />
+    view = <Account session={session} status={status} state={state} onImport={(s) => setState(migrateState({ ...s, updatedAt: Date.now() }))} hasPin={hasPin} onPinChange={(enabled) => { setHasPin(enabled); setLocked(false) }} onPrefs={(prefs) => mutate(() => ({ prefs }))} onExportXlsx={exportXlsx} syncMessage={syncMessage} />
   } else if (tab === 'search') {
     view = <Search cycles={state.cycles} expenses={state.expenses} />
   } else if (tab === 'insights') {
@@ -896,11 +916,12 @@ export default function App() {
       <Home
         cycle={current}
         expenses={state.expenses}
+        cacheOwnerId={session?.user.id ?? 'guest'}
         onAdd={(e) => mutate((s) => ({ expenses: [...s.expenses, e] }))}
         onEdit={(expense) => mutate((s) => ({ expenses: s.expenses.map((e) => e.id === expense.id ? expense : e) }))}
         onDelete={(id) => mutate((s) => ({ expenses: s.expenses.map((e) => e.id === id ? { ...e, deleted: true } : e) }))}
         onReceipt={async (expenseId, blob, dataUrl) => {
-          await cacheReceipt(expenseId, dataUrl)
+          await cacheReceipt(`${session?.user.id ?? 'guest'}:${expenseId}`, dataUrl)
           if (!session || !supabase || !navigator.onLine) return undefined
           const path = `${session.user.id}/${expenseId}.jpg`
           const { error } = await supabase.storage.from('receipts').upload(path, blob, { contentType: 'image/jpeg', upsert: true })
@@ -920,7 +941,7 @@ export default function App() {
             reader.onerror = () => reject(new Error('Unable to read the downloaded receipt.'))
             reader.readAsDataURL(blob)
           })
-          await cacheReceipt(expense.id, dataUrl)
+          await cacheReceipt(`${session.user.id}:${expense.id}`, dataUrl)
           return dataUrl
         }}
         onPayday={(date) => mutate((s) => ({ cycles: s.cycles.map((c) => c.id === current.id ? { ...c, nextPayday: date } : c) }))}
@@ -958,6 +979,10 @@ export default function App() {
         onPrefs={(p) => mutate(() => ({ prefs: p }))}
       />
     )
+  }
+
+  if (!accountDataReady) {
+    return <main className="screen"><h1 className="title">Loading your account</h1><p className="muted">Keeping each account's data separate…</p></main>
   }
 
   if (locked && hasPin) {

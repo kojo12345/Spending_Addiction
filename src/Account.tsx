@@ -15,7 +15,7 @@ const LABEL: Record<SyncStatus, string> = {
   offline: 'Offline. Changes are kept on this device and will sync when you reconnect.',
 }
 
-export default function Account({ session, status, state, onImport, hasPin, onPinChange, onPrefs, onExportXlsx }: { session: Session | null; status: SyncStatus; state: AppState; onImport: (s: AppState) => void; hasPin: boolean; onPinChange: (enabled: boolean) => void; onPrefs: (prefs: Prefs) => void; onExportXlsx: () => void }) {
+export default function Account({ session, status, state, onImport, hasPin, onPinChange, onPrefs, onExportXlsx, syncMessage }: { session: Session | null; status: SyncStatus; state: AppState; onImport: (s: AppState) => void; hasPin: boolean; onPinChange: (enabled: boolean) => void; onPrefs: (prefs: Prefs) => void; onExportXlsx: () => void; syncMessage: string }) {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [msg, setMsg] = useState('')
@@ -36,6 +36,11 @@ export default function Account({ session, status, state, onImport, hasPin, onPi
     })
     return () => data.subscription.unsubscribe()
   }, [])
+
+  useEffect(() => {
+    setEmail('')
+    setPassword('')
+  }, [session?.user.id])
 
   const auth = async (mode: 'in' | 'up') => {
     if (!supabase) {
@@ -73,6 +78,7 @@ export default function Account({ session, status, state, onImport, hasPin, onPi
         setMsg(data.session
           ? 'Account created and signed in.'
           : 'Account created. Check your email for a confirmation link, then return here to sign in.')
+        setPassword('')
       }
     } catch (error) {
       setMsgKind('error')
@@ -191,6 +197,7 @@ export default function Account({ session, status, state, onImport, hasPin, onPi
       <h1 className="title">{session ? 'Profile' : 'Account'}</h1>
       <section className="card stack">
         <p className="muted">{LABEL[status]}</p>
+        {syncMessage && <p className={`${status === 'offline' ? 'bad' : 'muted'} small`} role={status === 'offline' ? 'alert' : 'status'}>{syncMessage}</p>}
         {!supabase && <p className="bad small" role="alert">{supabaseConfigMessage}</p>}
         {supabase && resetPassword && (
           <>
